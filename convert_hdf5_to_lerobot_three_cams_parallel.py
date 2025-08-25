@@ -25,6 +25,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import h5py
 import numpy as np
 import torch
+from tqdm import tqdm
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 
@@ -175,6 +176,24 @@ def convert_parallel(
             submitted_idx += 1
 
         episode_idx = 0
+        
+        # Create progress bars
+        episode_pbar = tqdm(
+            total=len(hdf5_files),
+            desc="Processing episodes",
+            unit="episode",
+            position=0,
+            leave=True
+        )
+        
+        frame_pbar = tqdm(
+            total=0,  # Will be updated per episode
+            desc="Processing frames",
+            unit="frame",
+            position=1,
+            leave=True
+        )
+        
         while completed_idx < len(hdf5_files):
             # Wait for the next completed future in completion order
             done, _ = concurrent.futures.wait(in_flight, return_when=concurrent.futures.FIRST_COMPLETED)
@@ -185,6 +204,11 @@ def convert_parallel(
                 # Write this episode sequentially to ensure consistent indices on disk
                 dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
                 ep_len = int(episode_data["action"].shape[0])
+                
+                # Update frame progress bar for this episode
+                frame_pbar.reset(total=ep_len)
+                frame_pbar.set_description(f"Episode {episode_idx + 1}/{len(hdf5_files)}")
+                
                 for frame_idx in range(ep_len):
                     frame = {
                         "action": episode_data["action"][frame_idx],
@@ -196,16 +220,29 @@ def convert_parallel(
                         "next.done": np.array([frame_idx == ep_len - 1], dtype=np.bool_),
                     }
                     dataset.add_frame(frame, task=task_name)
+                    frame_pbar.update(1)
 
                 dataset.save_episode()
                 total_frames += ep_len
                 episode_idx += 1
                 completed_idx += 1
+                
+                # Update episode progress
+                episode_pbar.update(1)
+                episode_pbar.set_postfix({
+                    'frames': total_frames,
+                    'avg_frames_per_ep': total_frames // (episode_idx),
+                    'remaining_episodes': len(hdf5_files) - episode_idx
+                })
 
                 # Top up the in-flight queue
                 if submitted_idx < len(hdf5_files):
                     in_flight.append(ex.submit(load_hdf5_episode, hdf5_files[submitted_idx]))
                     submitted_idx += 1
+
+        # Close progress bars
+        episode_pbar.close()
+        frame_pbar.close()
 
     dataset.stop_image_writer()
 

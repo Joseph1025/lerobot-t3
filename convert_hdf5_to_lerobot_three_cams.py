@@ -20,6 +20,7 @@ import subprocess
 import sys
 from huggingface_hub import HfApi, login
 from huggingface_hub.utils import HfHubHTTPError
+from tqdm import tqdm
 
 from lerobot.datasets.lerobot_dataset import LeRobotDataset
 from lerobot.utils.buffer import guess_feature_info
@@ -306,6 +307,16 @@ def convert_hdf5_to_lerobot_three_cams(
     
     # Process each episode
     total_frames = 0
+    
+    # Create progress bars
+    episode_pbar = tqdm(
+        total=len(hdf5_files),
+        desc="Processing episodes",
+        unit="episode",
+        position=0,
+        leave=True
+    )
+    
     for episode_idx, hdf5_file in enumerate(hdf5_files):
         logger.info(f"Processing episode {episode_idx + 1}/{len(hdf5_files)}: {hdf5_file.name}")
         
@@ -318,6 +329,15 @@ def convert_hdf5_to_lerobot_three_cams(
         
         # Create episode buffer
         dataset.episode_buffer = dataset.create_episode_buffer(episode_index=episode_idx)
+        
+        # Create frame progress bar for this episode
+        frame_pbar = tqdm(
+            total=episode_length,
+            desc=f"Episode {episode_idx + 1} frames",
+            unit="frame",
+            position=1,
+            leave=False
+        )
         
         # Process each frame
         for frame_idx in range(episode_length):
@@ -334,15 +354,31 @@ def convert_hdf5_to_lerobot_three_cams(
             }
             # Add frame to dataset
             dataset.add_frame(frame, task=task_name)
+            frame_pbar.update(1)
             
             # Log progress every 100 frames
             if frame_idx % 100 == 0:
                 logger.info(f"  Processed frame {frame_idx}/{episode_length}")
         
+        # Close frame progress bar
+        frame_pbar.close()
+        
         # Save episode
         dataset.save_episode()
         total_frames += episode_length
+        
+        # Update episode progress
+        episode_pbar.update(1)
+        episode_pbar.set_postfix({
+            'frames': total_frames,
+            'avg_frames_per_ep': total_frames // (episode_idx + 1),
+            'remaining_episodes': len(hdf5_files) - (episode_idx + 1)
+        })
+        
         logger.info(f"Saved episode {episode_idx + 1}")
+    
+    # Close episode progress bar
+    episode_pbar.close()
     
     # Stop image writer
     dataset.stop_image_writer()
